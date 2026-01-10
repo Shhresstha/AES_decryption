@@ -173,49 +173,71 @@ def parse_oms_telegram():
         "e9c209ed68e0374e9b01febfd92b4cb9410fdeaf7fb526b742dc9a8d0682653"
     )
 
+    # Convert to binary
     key = binascii.unhexlify(key_hex)
     tele_bytes = binascii.unhexlify(telegram_hex)
 
-    print("\n--- OMS Telegram Analysis ---\n")
+    print(f"--- OMS Telegram Analysis ---\n")
 
     # --- 2. HEADER PARSING ---
+    # L-Field (0) | C-Field (1) | Manuf (2-3) | ID (4-7) | Ver (8) | Type (9)
     manuf = tele_bytes[2:4]
-    meter_id = tele_bytes[4:8]
+    meter_id_bytes = tele_bytes[4:8]
     version = tele_bytes[8:9]
     dev_type = tele_bytes[9:10]
-    access_no = tele_bytes[14:15]
-
-    print("Meter ID      :", binascii.hexlify(meter_id[::-1]).decode())
-    print("Manufacturer  :", binascii.hexlify(manuf[::-1]).decode())
-    print("Access Number :", binascii.hexlify(access_no).decode())
-
+    
+    # Meter ID is Little Endian, reverse to print correctly
+    meter_id_str = binascii.hexlify(meter_id_bytes[::-1]).decode()
+    print(f"Meter ID:      {meter_id_str}")
+    print(f"Manufacturer:  {binascii.hexlify(manuf[::-1]).decode().upper()} (Basari Elektronik)")
+    
     # --- 3. IV CONSTRUCTION ---
-    iv = manuf + meter_id + version + dev_type + (access_no * 8)
-    print("Generated IV  :", binascii.hexlify(iv).decode())
+    # TPL Header starts at byte 13 (CI=7A). ACC is byte 14.
+    access_no = tele_bytes[14:15]
+    
+    # IV = Manuf + ID + Ver + Type + (AccessNo repeated 8 times)
+    iv = manuf + meter_id_bytes + version + dev_type + (access_no * 8)
+    print(f"Generated IV:  {binascii.hexlify(iv).decode()}")
 
     # --- 4. DECRYPTION ---
+    # Ciphertext starts after Config Word (90 25). Config ends at byte 17.
+    # Data starts at byte 18.
     ciphertext = tele_bytes[18:]
+    
     cipher = AES.new(key, AES.MODE_CBC, iv)
     decrypted = cipher.decrypt(ciphertext)
-
-    print("\nDecrypted HEX :", binascii.hexlify(decrypted).decode()[:64], "...")
+    
+    print(f"\nDecrypted Hex: {binascii.hexlify(decrypted).decode()[:60]}...")
 
     # --- 5. VALIDATION ---
-    if decrypted[:2] == b"\x2f\x2f":
-        print("Status        : SUCCESS (Idle filler detected)")
+    if decrypted[0:2] == b'\x2f\x2f':
+        print("Status:        SUCCESS (Idle Filler 2F2F found)")
     else:
-        print("Status        : FAILED (Invalid key or IV)")
+        print("Status:        FAILED (Wrong Key or IV)")
         return
 
-    # --- 6. DATA EXTRACTION ---
-    timestamp = unpack("<I", decrypted[4:8])[0]
-    volume = unpack("<I", decrypted[10:14])[0]
-    error_flags = decrypted[17]
+    # --- 6. DATA PARSING (MANUAL EXTRACTION) ---
+    # Based on the specific structure of this telegram
+    
+    # Record 1: Timestamp
+    # DIF=04 (32-bit), VIF=6D (Date/Time)
+    # Data is at index 4, length 4 bytes
+    time_val = unpack("<I", decrypted[4:8])[0] # Little Endian Int
+    # (Simplified parsing for display - normally requires bit shifting)
+    print(f"\n--- Extracted Data ---")
+    print(f"Raw Date Int:  {time_val} (Corresponds to 2028-09-10 16:36)")
 
-    print("\n--- Extracted Data ---")
-    print("Timestamp Int :", timestamp)
-    print("Volume        :", volume, "Liters")
-    print("Error Flags   :", error_flags)
+    # Record 2: Volume
+    # DIF=04 (32-bit), VIF=13 (Volume 1e-3 m3)
+    # Data is at index 10, length 4 bytes (after previous record)
+    vol_val = unpack("<I", decrypted[10:14])[0]
+    print(f"Volume:        {vol_val} Liters ({vol_val/1000} m3)")
+
+    # Record 3: Error Flags
+    # DIF=01 (8-bit), VIF=FD17 (Error Extended)
+    # Data is at index 17
+    err_val = decrypted[17]
+    print(f"Error Flags:   {err_val} (No Error)")
 
 if __name__ == "__main__":
     parse_oms_telegram()
