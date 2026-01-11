@@ -274,5 +274,3 @@ if __name__ == "__main__":
 * EN 13757-4 — Wireless M-Bus
 * EN 13757-3 — Application Layer
 * PyCryptodome — AES-CBC implementation
-
-```
